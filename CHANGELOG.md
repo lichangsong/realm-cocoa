@@ -284,7 +284,7 @@ GM seed.
 
 ### Enhancements
 
-* None.
+* Add `SyncPermission` class to allow reviewing access permissions for Realms
 
 ### Bugfixes
 
