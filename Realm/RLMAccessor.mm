@@ -277,6 +277,7 @@ static inline void RLMSetValue(__unsafe_unretained RLMObjectBase *const obj, NSU
 static id RLMAccessorGetter(RLMProperty *prop, const char *type) {
     NSUInteger index = prop.index;
     bool boxed = prop.optional || *type == '@';
+    bool array = prop.array;
     switch (prop.type) {
         case RLMPropertyTypeInt:
             if (boxed) {
@@ -349,11 +350,7 @@ static id RLMAccessorGetter(RLMProperty *prop, const char *type) {
             };
         case RLMPropertyTypeObject:
             return ^id(__unsafe_unretained RLMObjectBase *const obj) {
-                return RLMGetLink(obj, index);
-            };
-        case RLMPropertyTypeArray:
-            return ^(__unsafe_unretained RLMObjectBase *const obj) {
-                return RLMGetArray(obj, index);
+                return array ? RLMGetArray(obj, index) : RLMGetLink(obj, index);
             };
         case RLMPropertyTypeAny:
             @throw RLMException(@"Cannot create accessor class for schema with Mixed properties");
@@ -396,6 +393,7 @@ static id makeSetter(__unsafe_unretained RLMProperty *const prop) {
 // dynamic setter with column closure
 static id RLMAccessorSetter(RLMProperty *prop, const char *type) {
     bool boxed = prop.optional || *type == '@';
+    bool array = prop.array;
     switch (prop.type) {
         case RLMPropertyTypeInt:
             if (boxed) {
@@ -419,8 +417,7 @@ static id RLMAccessorSetter(RLMProperty *prop, const char *type) {
         case RLMPropertyTypeString:         return makeSetter<NSString *>(prop);
         case RLMPropertyTypeDate:           return makeSetter<NSDate *>(prop);
         case RLMPropertyTypeData:           return makeSetter<NSData *>(prop);
-        case RLMPropertyTypeObject:         return makeSetter<RLMObjectBase *>(prop);
-        case RLMPropertyTypeArray:          return makeSetter<RLMArray *>(prop);
+        case RLMPropertyTypeObject:         return array ? makeSetter<RLMArray *>(prop) : makeSetter<RLMObjectBase *>(prop);
         case RLMPropertyTypeAny:            return makeSetter<id>(prop);
         case RLMPropertyTypeLinkingObjects: return nil;
     }
@@ -447,7 +444,7 @@ static void RLMSuperSet(RLMObjectBase *obj, NSString *propName, id val) {
 // getter/setter for unmanaged object
 static id RLMAccessorUnmanagedGetter(RLMProperty *prop, const char *) {
     // only override getters for RLMArray and linking objects properties
-    if (prop.type == RLMPropertyTypeArray) {
+    if (prop.array) {
         NSString *objectClassName = prop.objectClassName;
         NSString *propName = prop.name;
 
@@ -468,7 +465,7 @@ static id RLMAccessorUnmanagedGetter(RLMProperty *prop, const char *) {
     return nil;
 }
 static id RLMAccessorUnmanagedSetter(RLMProperty *prop, const char *) {
-    if (prop.type != RLMPropertyTypeArray) {
+    if (!prop.array) {
         return nil;
     }
 
@@ -616,6 +613,20 @@ void RLMDynamicSet(__unsafe_unretained RLMObjectBase *const obj, __unsafe_unreta
             case RLMPropertyTypeDate:   RLMSetValue(obj, col, (NSDate *)val, setDefault); break;
             case RLMPropertyTypeData:   RLMSetValue(obj, col, (NSData *)val, setDefault); break;
             case RLMPropertyTypeObject: {
+                if (prop.array) {
+                    if (!val || val == NSNull.null) {
+                        RLMSetValue(obj, col, (id<NSFastEnumeration>)nil, setDefault);
+                    }
+                    else {
+                        id<NSFastEnumeration> rawLinks = val;
+                        NSMutableArray *links = [NSMutableArray array];
+                        for (id rawLink in rawLinks) {
+                            [links addObject:RLMGetLinkedObjectForValue(obj->_realm, prop.objectClassName, rawLink, creationOptions)];
+                        }
+                        RLMSetValue(obj, col, links, setDefault);
+                    }
+                    return;
+                }
                 if (!val || val == NSNull.null) {
                     RLMSetValue(obj, col, (RLMObjectBase *)nil, setDefault);
                 }
@@ -625,19 +636,6 @@ void RLMDynamicSet(__unsafe_unretained RLMObjectBase *const obj, __unsafe_unreta
                 }
                 break;
             }
-            case RLMPropertyTypeArray:
-                if (!val || val == NSNull.null) {
-                    RLMSetValue(obj, col, (id<NSFastEnumeration>)nil, setDefault);
-                }
-                else {
-                    id<NSFastEnumeration> rawLinks = val;
-                    NSMutableArray *links = [NSMutableArray array];
-                    for (id rawLink in rawLinks) {
-                        [links addObject:RLMGetLinkedObjectForValue(obj->_realm, prop.objectClassName, rawLink, creationOptions)];
-                    }
-                    RLMSetValue(obj, col, links, setDefault);
-                }
-                break;
             case RLMPropertyTypeAny:
                 RLMSetValue(obj, col, val, setDefault);
                 break;
@@ -657,8 +655,7 @@ id RLMDynamicGet(__unsafe_unretained RLMObjectBase *const obj, __unsafe_unretain
         case RLMPropertyTypeString:         return RLMGetString(obj, index);
         case RLMPropertyTypeDate:           return RLMGetDate(obj, index);
         case RLMPropertyTypeData:           return RLMGetData(obj, index);
-        case RLMPropertyTypeObject:         return RLMGetLink(obj, index);
-        case RLMPropertyTypeArray:          return RLMGetArray(obj, index);
+        case RLMPropertyTypeObject:         return prop.array ? RLMGetArray(obj, index) : RLMGetLink(obj, index);
         case RLMPropertyTypeAny:            return RLMGetAnyProperty(obj, index);
         case RLMPropertyTypeLinkingObjects: return RLMGetLinkingObjects(obj, prop);
     }
@@ -669,7 +666,7 @@ id RLMDynamicGetByName(__unsafe_unretained RLMObjectBase *const obj, __unsafe_un
     if (!prop) {
         @throw RLMException(@"Invalid property name '%@' for class '%@'.", propName, obj->_objectSchema.className);
     }
-    if (asList && prop.type == RLMPropertyTypeArray && prop.swiftIvar) {
+    if (asList && prop.array && prop.swiftIvar) {
         RLMListBase *list = object_getIvar(obj, prop.swiftIvar);
         if (!list._rlmArray) {
             list._rlmArray = RLMDynamicGet(obj, prop);
